@@ -12,6 +12,7 @@ import torch.nn.functional as F
 from torchvision import datasets, transforms
 
 from fairscale.nn.data_parallel import ShardedDataParallel
+from fairscale.optim import OSS
 
 WORLD_SIZE = 2
 OPTIM = torch.optim.RMSprop
@@ -49,25 +50,21 @@ class Net(nn.Module):
         return output
 
 
-def train(rank, args, model, device, train_loader, num_epochs):
+def train(rank, args, model, device, train_loader, num_epochs, use_cuda):
     ##############
     # SETUP
     dist_init(rank, WORLD_SIZE, BACKEND)
-    ddp = ShardedDataParallel(
-        module=model,
-        optimizer=torch.optim.Adadelta,
-        optimizer_params={"lr": 1e-4},
-        world_size=WORLD_SIZE,
-        broadcast_buffers=True,
-    )
+    optimizer = OSS(params=model.parameters(), optim=torch.optim.Adadelta, lr=1e-4)
+    ddp = ShardedDataParallel(model, optimizer,)
 
     ddp.train()
-    optimizer = ddp.optimizer
     # Reset the memory use counter
-    torch.cuda.reset_peak_memory_stats(rank)
+    if use_cuda:
+        torch.cuda.reset_peak_memory_stats(rank)
 
     # Training loop
-    torch.cuda.synchronize(rank)
+    if use_cuda:
+        torch.cuda.synchronize(rank)
     training_start = time.monotonic()
 
     loss_fn = nn.CrossEntropyLoss()
@@ -85,14 +82,15 @@ def train(rank, args, model, device, train_loader, num_epochs):
                 outputs = model(data)
                 loss = loss_fn(outputs, target)
                 loss.backward()
-                ddp.reduce()  # Send the gradients to the appropriate shards
+                # ddp.reduce()  # Send the gradients to the appropriate shards
                 return loss
 
             optimizer.step(closure)
 
         epoch_end = time.monotonic()
 
-    torch.cuda.synchronize(rank)
+    if use_cuda:
+        torch.cuda.synchronize(rank)
     training_stop = time.monotonic()
     print("Total Time:", training_stop - training_start)
 
@@ -137,7 +135,7 @@ def main():
     model = Net().to(device)
 
     mp.spawn(
-        train, args=(args, model, device, train_loader, args.epochs), nprocs=WORLD_SIZE, join=True,
+        train, args=(args, model, device, train_loader, args.epochs, use_cuda), nprocs=WORLD_SIZE, join=True,
     )
 
 
