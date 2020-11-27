@@ -82,7 +82,6 @@ def train(rank, args, model, device, train_loader, num_epochs, use_cuda):
                 outputs = model(data)
                 loss = loss_fn(outputs, target)
                 loss.backward()
-                # ddp.reduce()  # Send the gradients to the appropriate shards
                 return loss
 
             optimizer.step(closure)
