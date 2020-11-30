@@ -65,7 +65,7 @@ def train(rank, args, use_cuda):
     sampler = DistributedSampler(dataset, num_replicas=WORLD_SIZE, rank=rank)
     kwargs = {"batch_size": args.batch_size, "sampler": sampler}
     if use_cuda:
-        kwargs.update({"num_workers": 1, "pin_memory": True, "shuffle": True},)
+        kwargs.update({"num_workers": 1, "pin_memory": True},)
 
     train_loader = DataLoader(dataset=dataset, **kwargs)
     model = Net().to(device)
