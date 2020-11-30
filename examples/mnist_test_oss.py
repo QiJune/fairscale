@@ -9,6 +9,8 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.data import BatchSampler, DataLoader, Sampler
+from torch.utils.data.distributed import DistributedSampler
 from torchvision import datasets, transforms
 
 from fairscale.nn.data_parallel import ShardedDataParallel
@@ -50,29 +52,40 @@ class Net(nn.Module):
         return output
 
 
-def train(rank, args, model, device, train_loader, num_epochs, use_cuda):
-    ##############
+def train(rank, args, use_cuda):
     # SETUP
     dist_init(rank, WORLD_SIZE, BACKEND)
+    if use_cuda:
+        torch.cuda.set_device(rank)
+
+    device = torch.device(rank) if use_cuda else torch.device("cpu")
+
+    transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
+    dataset = datasets.MNIST("../data", train=True, download=True, transform=transform)
+    sampler = DistributedSampler(dataset, num_replicas=WORLD_SIZE, rank=rank)
+
+    kwargs = {"batch_size": args.batch_size}
+    if use_cuda:
+        kwargs.update({"num_workers": 1, "pin_memory": True, "shuffle": True},)
+
+    train_loader = DataLoader(dataset=dataset, **kwargs)
+    model = Net().to(device)
+    loss_fn = nn.CrossEntropyLoss()
+
     optimizer = OSS(params=model.parameters(), optim=torch.optim.Adadelta, lr=1e-4)
     ddp = ShardedDataParallel(model, optimizer,)
-
     ddp.train()
+
     # Reset the memory use counter
     if use_cuda:
         torch.cuda.reset_peak_memory_stats(rank)
-
-    # Training loop
-    if use_cuda:
         torch.cuda.synchronize(rank)
+
     training_start = time.monotonic()
-
-    loss_fn = nn.CrossEntropyLoss()
-    ##############
-
     model.train()
+
     measurements = []
-    for epoch in range(num_epochs):
+    for epoch in range(args.epochs):
         epoch_start = time.monotonic()
         for batch_idx, (data, target) in enumerate(train_loader):
             data, target = data.to(device), target.to(device)
@@ -120,21 +133,8 @@ def main():
     args = parser.parse_args()
     use_cuda = not args.no_cuda and torch.cuda.is_available()
 
-    torch.manual_seed(args.seed)
-
-    device = torch.device("cuda" if use_cuda else "cpu")
-    kwargs = {"batch_size": args.batch_size}
-    if use_cuda:
-        kwargs.update({"num_workers": 1, "pin_memory": True, "shuffle": True},)
-
-    transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
-    dataset1 = datasets.MNIST("../data", train=True, download=True, transform=transform)
-    train_loader = torch.utils.data.DataLoader(dataset1, **kwargs)
-
-    model = Net().to(device)
-
     mp.spawn(
-        train, args=(args, model, device, train_loader, args.epochs, use_cuda), nprocs=WORLD_SIZE, join=True,
+        train, args=(args, use_cuda), nprocs=WORLD_SIZE, join=True,
     )
 
 
