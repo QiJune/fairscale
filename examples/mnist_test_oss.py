@@ -63,8 +63,7 @@ def train(rank, args, use_cuda):
     transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
     dataset = datasets.MNIST("../data", train=True, download=True, transform=transform)
     sampler = DistributedSampler(dataset, num_replicas=WORLD_SIZE, rank=rank)
-
-    kwargs = {"batch_size": args.batch_size}
+    kwargs = {"batch_size": args.batch_size, "sampler": sampler}
     if use_cuda:
         kwargs.update({"num_workers": 1, "pin_memory": True, "shuffle": True},)
 
@@ -85,6 +84,7 @@ def train(rank, args, use_cuda):
 
     measurements = []
     for epoch in range(args.epochs):
+        sampler.set_epoch(epoch)
         epoch_start = time.monotonic()
         for batch_idx, (data, target) in enumerate(train_loader):
             data, target = data.to(device), target.to(device)
